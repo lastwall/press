@@ -237,28 +237,34 @@ def app(owner, repository, branch, installation=None):
 
 @frappe.whitelist()
 def branches(owner, name, installation=None):
-	if installation:
-		token = get_access_token(installation)
-	else:
-		token = frappe.get_value("Press Settings", None, "github_access_token")
+    """Return ALL branches (not just the first page)."""
+    headers = get_auth_headers(installation)
 
-	if token:
-		headers = {
-			"Authorization": f"token {token}",
-		}
-	else:
-		headers = {}
+    branches = []
+    page = 1
+    while True:
+        resp = requests.get(
+            f"https://api.github.com/repos/{owner}/{name}/branches",
+            params={"per_page": 100, "page": page},
+            headers=headers,
+            timeout=20,
+        )
+        if not resp.ok:
+            frappe.throw("Error fetching branch list from GitHub: " + resp.text)
 
-	response = requests.get(
-		f"https://api.github.com/repos/{owner}/{name}/branches",
-		params={"per_page": 100},
-		headers=headers,
-	)
+        chunk = resp.json() or []
+        branches.extend(chunk)
 
-	if response.ok:
-		return response.json()
-	frappe.throw("Error fetching branch list from GitHub: " + response.text)
-	return None
+        # stop when we’re past the last page
+        # (either less than 100 returned OR no next link)
+        if len(chunk) < 100 or "next" not in resp.links:
+            break
+        page += 1
+
+    # optional: show version-* first in the UI without changing the UI code
+    branches.sort(key=lambda b: (0 if b.get("name", "").startswith("version-") else 1, b.get("name", "")))
+    return branches
+
 
 
 def get_auth_headers(installation_id: str | None = None) -> "dict[str, str]":
