@@ -4,19 +4,22 @@ from __future__ import annotations
 
 import os
 from hashlib import blake2b
+from typing import TYPE_CHECKING
 
 import frappe
 from frappe import _
 from frappe.contacts.address_and_contact import load_address_and_contact
 from frappe.core.utils import find
 from frappe.model.document import Document
+from frappe.query_builder.functions import Count
 from frappe.rate_limiter import rate_limit
-from frappe.utils import get_fullname, get_url_to_form, random_string
+from frappe.utils import get_fullname, get_last_day, get_url_to_form, getdate, random_string
 
 from press.api.client import dashboard_whitelist
 from press.exceptions import FrappeioServerNotSet
+from press.press.doctype.communication_info.communication_info import get_communication_info
 from press.press.doctype.telegram_message.telegram_message import TelegramMessage
-from press.utils import get_valid_teams_for_user, log_error
+from press.utils import get_valid_teams_for_user, has_role, log_error
 from press.utils.billing import (
 	get_frappe_io_connection,
 	get_stripe,
@@ -24,6 +27,9 @@ from press.utils.billing import (
 	process_micro_debit_test_charge,
 )
 from press.utils.telemetry import capture
+
+if TYPE_CHECKING:
+	from press.press.doctype.account_request.account_request import AccountRequest
 
 
 class Team(Document):
@@ -36,21 +42,22 @@ class Team(Document):
 		from frappe.types import DF
 
 		from press.press.doctype.child_team_member.child_team_member import ChildTeamMember
-		from press.press.doctype.communication_email.communication_email import CommunicationEmail
+		from press.press.doctype.communication_info.communication_info import CommunicationInfo
 		from press.press.doctype.invoice_discount.invoice_discount import InvoiceDiscount
 		from press.press.doctype.team_member.team_member import TeamMember
 
 		account_request: DF.Link | None
+		allow_unified_servers: DF.Check
 		apply_npo_discount: DF.Check
 		benches_enabled: DF.Check
 		billing_address: DF.Link | None
-		billing_email: DF.Data | None
 		billing_name: DF.Data | None
 		billing_team: DF.Link | None
 		child_team_members: DF.Table[ChildTeamMember]
 		code_servers_enabled: DF.Check
-		communication_emails: DF.Table[CommunicationEmail]
+		communication_infos: DF.Table[CommunicationInfo]
 		company_logo: DF.Attach | None
+		company_name: DF.Data | None
 		country: DF.Link | None
 		currency: DF.Link | None
 		customers: DF.SmallText | None
@@ -60,6 +67,7 @@ class Team(Document):
 		enable_inplace_updates: DF.Check
 		enable_performance_tuning: DF.Check
 		enabled: DF.Check
+		end_date: DF.Date | None
 		enforce_2fa: DF.Check
 		erpnext_partner: DF.Check
 		extend_payment_due_suspension: DF.Check
@@ -67,25 +75,30 @@ class Team(Document):
 		free_account: DF.Check
 		free_credits_allocated: DF.Check
 		github_access_token: DF.Data | None
+		hetzner_internal_user: DF.Check
+		hybrid_servers_enabled: DF.Check
 		introduction: DF.SmallText | None
 		is_code_server_user: DF.Check
 		is_developer: DF.Check
 		is_saas_user: DF.Check
 		is_us_eu: DF.Check
 		last_used_team: DF.Link | None
+		monthly_alert_threshold: DF.Currency
 		mpesa_enabled: DF.Check
 		mpesa_phone_number: DF.Data | None
 		mpesa_tax_id: DF.Data | None
-		notify_email: DF.Data | None
 		parent_team: DF.Link | None
 		partner_commission: DF.Percent
 		partner_email: DF.Data | None
+		partner_manager: DF.Link | None
 		partner_referral_code: DF.Data | None
 		partner_status: DF.Literal["Active", "Inactive"]
-		partner_tier: DF.Data | None
+		partner_tier: DF.Link | None
 		partnership_date: DF.Date | None
 		payment_mode: DF.Literal["", "Card", "Prepaid Credits", "Paid By Partner"]
+		phone_number: DF.Phone | None
 		razorpay_enabled: DF.Check
+		receive_budget_alerts: DF.Check
 		referrer_id: DF.Data | None
 		security_portal_enabled: DF.Check
 		self_hosted_servers_enabled: DF.Check
@@ -94,6 +107,7 @@ class Team(Document):
 		skip_backups: DF.Check
 		skip_onboarding: DF.Check
 		ssh_access_enabled: DF.Check
+		start_date: DF.Date | None
 		stripe_customer_id: DF.Data | None
 		team_members: DF.Table[TeamMember]
 		team_title: DF.Data | None
@@ -112,7 +126,6 @@ class Team(Document):
 		"billing_team",
 		"team_members",
 		"child_team_members",
-		"notify_email",
 		"country",
 		"currency",
 		"payment_mode",
@@ -131,8 +144,13 @@ class Team(Document):
 		"mpesa_tax_id",
 		"mpesa_phone_number",
 		"mpesa_enabled",
+		"razorpay_enabled",
 		"account_request",
 		"partner_status",
+		"receive_budget_alerts",
+		"monthly_alert_threshold",
+		"company_name",
+		"hybrid_servers_enabled",
 	)
 
 	def get_doc(self, doc):
@@ -153,6 +171,8 @@ class Team(Document):
 		doc.user_info = user
 		doc.balance = self.get_balance()
 		doc.is_desk_user = user.user_type == "System User"
+		doc.is_support_agent = has_role("Press Support Agent")
+		doc.can_request_access = has_role("Press Support Agent")
 		doc.valid_teams = get_valid_teams_for_user(frappe.session.user)
 		doc.onboarding = self.get_onboarding()
 		doc.billing_info = self.billing_info()
@@ -172,6 +192,12 @@ class Team(Document):
 				"stripe_mandate_id",
 			],
 			as_dict=True,
+		)
+		doc.communication_infos = self.get_communication_infos()
+		doc.receive_budget_alerts = self.receive_budget_alerts
+		doc.monthly_alert_threshold = self.monthly_alert_threshold
+		doc.is_binlog_indexer_enabled = not frappe.db.get_single_value(
+			"Press Settings", "disable_binlog_indexer_service", cache=True
 		)
 
 	def onload(self):
@@ -198,19 +224,10 @@ class Team(Document):
 		self.validate_billing_team()
 
 	def before_insert(self):
-		self.set_notification_emails()
-
 		self.currency = "INR" if self.country == "India" else "USD"
 
 		if not self.referrer_id:
 			self.set_referrer_id()
-
-	def set_notification_emails(self):
-		if not self.notify_email:
-			self.notify_email = self.user
-
-		if not self.billing_email:
-			self.billing_email = self.user
 
 	def set_referrer_id(self):
 		h = blake2b(digest_size=4)
@@ -273,23 +290,34 @@ class Team(Document):
 		self.add_comment("Info", "enabled account")
 
 	@classmethod
-	def create_new(
+	def create_new(  # noqa: C901
 		cls,
 		account_request: AccountRequest,
 		first_name: str,
 		last_name: str,
 		password: str | None = None,
 		country: str | None = None,
+		phone: str | None = None,
 		is_us_eu: bool = False,
 		via_erpnext: bool = False,
 		user_exists: bool = False,
 	):
 		"""Create new team along with user (user created first)."""
+		# Get full phone number with country code
+		full_phone = None
+		if phone and country:
+			dialing_code = get_country_dialing_code(country)
+			if dialing_code:
+				full_phone = f"+{dialing_code}-{phone}"
+			else:
+				full_phone = phone
+
 		team: "Team" = frappe.get_doc(
 			{
 				"doctype": "Team",
 				"user": account_request.email,
 				"country": country,
+				"phone_number": full_phone,
 				"enabled": 1,
 				"via_erpnext": via_erpnext,
 				"is_us_eu": is_us_eu,
@@ -312,10 +340,7 @@ class Team(Document):
 		team.team_title = "Parent Team"
 		team.insert(ignore_permissions=True, ignore_links=True)
 		team.append("team_members", {"user": user.name})
-		if not account_request.invited_by_parent_team:
-			team.append("communication_emails", {"type": "invoices", "value": user.name})
-			team.append("communication_emails", {"type": "marketplace_notifications", "value": user.name})
-		else:
+		if account_request.invited_by_parent_team:
 			team.parent_team = account_request.invited_by
 
 		if account_request.product_trial:
@@ -353,6 +378,7 @@ class Team(Document):
 		password=None,
 		role=None,
 		press_roles=None,
+		skip_validations=False,
 	):
 		user = frappe.db.get_value("User", email, ["name"], as_dict=True)
 		if not user:
@@ -362,7 +388,10 @@ class Team(Document):
 		self.save(ignore_permissions=True)
 
 		for role in press_roles or []:
-			frappe.get_doc("Press Role", role.press_role).add_user(user.name)
+			frappe.get_doc("Press Role", role.press_role).add_user(
+				user.name,
+				skip_validations=skip_validations,
+			)
 
 	@dashboard_whitelist()
 	def remove_team_member(self, member):
@@ -375,8 +404,8 @@ class Team(Document):
 			roles = (
 				frappe.qb.from_(PressRole)
 				.join(PressRoleUser)
-				.on(PressRole.name == PressRoleUser.parent)
-				.where(PressRoleUser.user == member)
+				.on((PressRoleUser.parent == PressRole.name) & (PressRoleUser.user == member))
+				.where(PressRole.team == self.name)
 				.select(PressRole.name)
 				.run(as_dict=True, pluck="name")
 			)
@@ -464,7 +493,7 @@ class Team(Document):
 
 		self.validate_payment_mode()
 		self.update_draft_invoice_payment_mode()
-		self.set_notification_emails()
+		self.check_budget_alert_threshold()
 
 		if (
 			not self.is_new()
@@ -482,6 +511,15 @@ class Team(Document):
 
 			for invoice in draft_invoices:
 				frappe.db.set_value("Invoice", invoice, "payment_mode", self.payment_mode)
+
+	def check_budget_alert_threshold(self):
+		if self.receive_budget_alerts and self.has_value_changed("monthly_alert_threshold"):
+			frappe.db.set_value(
+				"Invoice",
+				{"team": self.name, "docstatus": 0, "due_date": get_last_day(getdate())},
+				"budget_alert_sent",
+				0,
+			)
 
 	@frappe.whitelist()
 	def impersonate(self, member, reason):
@@ -506,14 +544,16 @@ class Team(Document):
 			self.partner_email = self.user
 		self.frappe_partnership_date = self.get_partnership_start_date()
 		self.servers_enabled = 1
+		self.partner_status = "Active"
 		self.save(ignore_permissions=True)
+		frappe.get_doc("User", self.user).add_roles("Partner")
 		self.create_partner_referral_code()
-		self.create_new_invoice()
 
 	@frappe.whitelist()
 	def disable_erpnext_partner_privileges(self):
-		self.erpnext_partner = 0
+		self.partner_status = "Inactive"
 		self.save(ignore_permissions=True)
+		frappe.get_doc("User", self.user).remove_roles("Partner")
 
 	def create_partner_referral_code(self):
 		if not self.partner_referral_code:
@@ -532,58 +572,6 @@ class Team(Document):
 		if not data:
 			frappe.throw("Partner not found on frappe.io")
 		return frappe.utils.getdate(data.get("start_date"))
-
-	def create_new_invoice(self):
-		"""
-		After enabling partner privileges, new invoice should be created
-		to track the partner achievements
-		"""
-		# check if any active user with an invoice
-		if not frappe.get_all("Invoice", {"team": self.name, "docstatus": ("<", 2)}, pluck="name"):
-			return
-		today = frappe.utils.getdate()
-		current_invoice = frappe.db.get_value(
-			"Invoice",
-			{
-				"team": self.name,
-				"type": "Subscription",
-				"docstatus": 0,
-				"period_end": frappe.utils.get_last_day(today),
-			},
-			"name",
-		)
-
-		if not current_invoice:
-			return
-
-		current_inv_doc = frappe.get_doc("Invoice", current_invoice)
-
-		if current_inv_doc.partner_email and current_inv_doc.partner_email == self.partner_email:
-			# don't create new invoice if partner email is set
-			return
-
-		if (
-			not current_invoice
-			or today == frappe.utils.get_last_day(today)
-			or today == current_inv_doc.period_start
-		):
-			# don't create invoice if new team or today is the last day of the month
-			return
-		current_inv_doc.period_end = frappe.utils.add_days(today, -1)
-		current_inv_doc.flags.on_partner_conversion = True
-		current_inv_doc.save()
-		current_inv_doc.finalize_invoice()
-
-		# create invoice
-		invoice = frappe.get_doc(
-			{
-				"doctype": "Invoice",
-				"team": self.name,
-				"type": "Subscription",
-				"period_start": today,
-			}
-		)
-		invoice.insert()
 
 	def create_referral_bonus(self, referrer_id):
 		# Get team name with this this referrer id
@@ -621,6 +609,22 @@ class Team(Document):
 			customer = stripe.Customer.create(email=self.user, name=get_fullname(self.user))
 			self.stripe_customer_id = customer.id
 			self.save()
+
+	@dashboard_whitelist()
+	def get_communication_infos(self):
+		return (
+			[{"channel": c.channel, "type": c.type, "value": c.value} for c in self.communication_infos]
+			if hasattr(self, "communication_infos")
+			else []
+		)
+
+	@dashboard_whitelist()
+	def update_communication_infos(self, values: list[dict]):
+		from press.press.doctype.communication_info.communication_info import (
+			update_communication_infos as update_infos,
+		)
+
+		update_infos("Team", self.name, values)
 
 	@frappe.whitelist()
 	def update_billing_details(self, billing_details):
@@ -841,6 +845,32 @@ class Team(Document):
 		customer_object = stripe.Customer.retrieve(self.stripe_customer_id)
 		return (customer_object["balance"] * -1) / 100
 
+	def is_team_owner(self) -> bool:
+		"""
+		Checks if the current user is the owner of the team.
+		"""
+		return bool(frappe.db.get_value("Team", self.name, "user") == frappe.session.user)
+
+	def is_admin_user(self) -> bool:
+		"""
+		Checks if the current user has admin access in the team via roles.
+		"""
+		PressRole = frappe.qb.DocType("Press Role")
+		PressRoleUser = frappe.qb.DocType("Press Role User")
+		return (
+			frappe.qb.from_(PressRoleUser)
+			.left_join(PressRole)
+			.on(PressRole.name == PressRoleUser.parent)
+			.select(Count(PressRoleUser.name).as_("count"))
+			.where(PressRole.team == self.name)
+			.where(PressRoleUser.user == frappe.session.user)
+			.where(PressRole.admin_access == 1)
+			.run(as_dict=1)
+			.pop()
+			.get("count", 0)
+			> 0
+		)
+
 	@dashboard_whitelist()
 	def get_team_members(self):
 		return get_team_members(self.name)
@@ -1022,7 +1052,7 @@ class Team(Document):
 			partner_level = res.get("message")
 			certificate_count = res.get("certificates")
 			if partner_level:
-				return partner_level, certificate_count
+				return [partner_level, certificate_count]
 			return None
 
 		self.add_comment(text="Failed to fetch partner level" + "<br><br>" + response.text)
@@ -1135,7 +1165,7 @@ class Team(Document):
 		)
 
 	def reallocate_workers_if_needed(
-		self, workloads_before: list[str, float, str], workloads_after: list[str, float, str]
+		self, workloads_before: list[tuple[str, float, str]], workloads_after: list[tuple[str, float, str]]
 	):
 		for before, after in zip(workloads_before, workloads_after, strict=False):
 			if after[1] - before[1] >= 8:  # 100 USD equivalent
@@ -1205,14 +1235,6 @@ class Team(Document):
 			doctype="Invoice", team=self.name, period_start=today, type="Subscription"
 		).insert()
 
-	def notify_with_email(self, recipients: list[str], **kwargs):
-		if not self.send_notifications:
-			return
-		if not recipients:
-			recipients = [self.notify_email]
-
-		frappe.sendmail(recipients=recipients, **kwargs)
-
 	@frappe.whitelist()
 	def send_telegram_alert_for_failed_payment(self, invoice):
 		team_url = get_url_to_form("Team", self.name)
@@ -1223,10 +1245,7 @@ class Team(Document):
 	@frappe.whitelist()
 	def send_email_for_failed_payment(self, invoice, sites=None):
 		invoice = frappe.get_doc("Invoice", invoice)
-		email = (
-			frappe.db.get_value("Communication Email", {"parent": self.name, "type": "invoices"}, "value")
-			or self.user
-		)
+		email = get_communication_info("Email", "Billing", "Team", self.name)
 		payment_method = self.default_payment_method
 		last_4 = frappe.db.get_value("Stripe Payment Method", payment_method, "last_4")
 		account_update_link = frappe.utils.get_url("/dashboard")
@@ -1606,3 +1625,110 @@ def is_us_eu():
 		"Mexico",
 	]
 	return frappe.db.get_value("Team", get_current_team(), "country") in countrygroup
+
+
+def check_budget_alerts():
+	"""
+	Daily background job to check if teams have exceeded their monthly budget alert limits.
+	Sends email notifications for invoices that have crossed the set limit.
+	"""
+	teams_with_budget_alert_enabled = frappe.get_all(
+		"Team",
+		filters={"receive_budget_alerts": 1, "monthly_alert_threshold": (">", 0), "enabled": 1},
+		fields=["name", "monthly_alert_threshold", "currency", "user"],
+	)
+
+	if not teams_with_budget_alert_enabled:
+		return
+
+	team_names = [team["name"] for team in teams_with_budget_alert_enabled]
+	team_dict = {team["name"]: team for team in teams_with_budget_alert_enabled}
+
+	current_month_end = get_last_day(getdate())
+
+	# Fetch current month invoices for all teams, filter out invoices that have already sent alerts
+	current_invoices = frappe.get_all(
+		"Invoice",
+		filters={
+			"team": ("in", team_names),
+			"due_date": current_month_end,
+			"status": "Draft",
+			"budget_alert_sent": 0,
+		},
+		fields=[
+			"name",
+			"team",
+			"total",
+			"period_start",
+			"period_end",
+		],
+		order_by="creation desc",
+	)
+
+	invoices_to_update = []  # To keep track of invoices that need budget_alert_sent field update
+	for invoice in current_invoices:
+		team_name = invoice["team"]
+		monthly_limit = team_dict[team_name]["monthly_alert_threshold"]
+		if invoice["total"] > monthly_limit:
+			email_sent = send_budget_alert_email(team_dict[team_name], invoice)
+			if email_sent:
+				invoices_to_update.append(invoice["name"])
+
+	if invoices_to_update:
+		Invoice = frappe.qb.DocType("Invoice")
+		(
+			frappe.qb.update(Invoice)
+			.set(Invoice.budget_alert_sent, 1)
+			.where(Invoice.name.isin(invoices_to_update))
+		).run()
+
+
+def send_budget_alert_email(team_info, invoice):
+	"""
+	Args:
+		team_info (dict)
+		invoice (dict): Invoice that exceeded the budget alert threshold
+	"""
+	try:
+		team_user = team_info["user"]
+		currency = "₹" if team_info["currency"] == "INR" else "$"
+
+		invoice_amount = f"{currency}{invoice['total']}"
+		alert_threshold = f"{currency}{team_info['monthly_alert_threshold']}"
+		excess_amount = f"{currency}{round(invoice['total'] - team_info['monthly_alert_threshold'], 2)}"
+
+		subject = f"Frappe Cloud Budget Alert for {team_user}"
+
+		frappe.sendmail(
+			recipients=team_user,
+			subject=subject,
+			template="budget_alert",
+			args={
+				"team_user": team_user,
+				"invoice_amount": invoice_amount,
+				"alert_threshold": alert_threshold,
+				"excess_amount": excess_amount,
+				"period_start": invoice["period_start"],
+				"period_end": invoice["period_end"],
+			},
+			reference_doctype="Invoice",
+			reference_name=invoice["name"],
+		)
+		return True
+	except Exception as e:
+		frappe.log_error(f"Failed to send budget alert email: {team_info['user']}", {e})
+		return False
+
+
+def get_country_dialing_code(country_name: str) -> str | None:
+	"""Get the dialing code for a given country name using phonenumbers library."""
+	from phonenumbers import country_code_for_region
+
+	# Get the ISO 3166 ALPHA-2 code from Country doctype
+	country_code = frappe.db.get_value("Country", country_name, "code")
+	if not country_code:
+		return None
+
+	# phonenumbers expects uppercase country code
+	dialing_code = country_code_for_region(country_code.upper())
+	return str(dialing_code) if dialing_code else None

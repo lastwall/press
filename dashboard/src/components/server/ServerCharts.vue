@@ -2,7 +2,8 @@
 	<div class="space-y-4">
 		<div class="flex space-x-2">
 			<FormControl
-				class="w-40"
+				v-if="serverOptions.length > 1"
+				class="w-50"
 				label="Server"
 				type="select"
 				:options="serverOptions"
@@ -19,7 +20,7 @@
 			/>
 		</div>
 		<div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
-			<AnalyticsCard title="Uptime" v-if="!isServerType('Application Server')">
+			<AnalyticsCard title="Uptime" v-if="isServerType('Database Server')">
 				<LineChart
 					type="time"
 					title="Uptime"
@@ -163,18 +164,7 @@
 					:key="requestCountBySiteData"
 					:data="requestCountBySiteData"
 					unit="requests"
-					:chartTheme="[
-						this.$theme.colors.green[500],
-						this.$theme.colors.red[500],
-						this.$theme.colors.yellow[500],
-						this.$theme.colors.pink[500],
-						this.$theme.colors.purple[500],
-						this.$theme.colors.blue[500],
-						this.$theme.colors.teal[500],
-						this.$theme.colors.cyan[500],
-						this.$theme.colors.gray[500],
-						this.$theme.colors.orange[500],
-					]"
+					:chartTheme="chartColors"
 					:loading="$resources.requestCountBySite.loading"
 					:error="$resources.requestCountBySite.error"
 					:showCard="false"
@@ -200,7 +190,43 @@
 				/>
 			</AnalyticsCard>
 
-			<AnalyticsCard title="Queries" v-if="!isServerType('Application Server')">
+			<AnalyticsCard
+				v-if="isServerType('Application Server')"
+				class="sm:col-span-2"
+				title="Background job frequency by site"
+			>
+				<BarChart
+					title="Background job frequency by site"
+					:key="backgroundJobCountBySiteData"
+					:data="backgroundJobCountBySiteData"
+					unit="jobs"
+					:chartTheme="chartColors"
+					:loading="$resources.backgroundJobCountBySite.loading"
+					:error="$resources.backgroundJobCountBySite.error"
+					:showCard="false"
+					class="h-[15.55rem] p-2 pb-3"
+				/>
+			</AnalyticsCard>
+
+			<AnalyticsCard
+				v-if="isServerType('Application Server')"
+				class="sm:col-span-2"
+				title="Slowest background jobs by site"
+			>
+				<BarChart
+					title="Slowest background jobs by site"
+					:key="backgroundJobDurationBySiteData"
+					:data="backgroundJobDurationBySiteData"
+					unit="seconds"
+					:chartTheme="chartColors"
+					:loading="$resources.backgroundJobDurationBySite.loading"
+					:error="$resources.backgroundJobDurationBySite.error"
+					:showCard="false"
+					class="h-[15.55rem] p-2 pb-3"
+				/>
+			</AnalyticsCard>
+
+			<AnalyticsCard title="Queries" v-if="isServerType('Database Server')">
 				<LineChart
 					type="time"
 					title="Queries"
@@ -226,7 +252,7 @@
 
 			<AnalyticsCard
 				title="DB Connections"
-				v-if="!isServerType('Application Server')"
+				v-if="isServerType('Database Server')"
 			>
 				<LineChart
 					type="time"
@@ -247,7 +273,7 @@
 
 			<AnalyticsCard
 				title="Average Row Lock Time"
-				v-if="!isServerType('Application Server')"
+				v-if="isServerType('Database Server')"
 			>
 				<LineChart
 					type="time"
@@ -265,7 +291,7 @@
 
 			<AnalyticsCard
 				title="Buffer Pool Size"
-				v-if="!isServerType('Application Server')"
+				v-if="isServerType('Database Server')"
 			>
 				<LineChart
 					type="time"
@@ -283,7 +309,7 @@
 
 			<AnalyticsCard
 				title="Buffer Pool Size of Total Ram"
-				v-if="!isServerType('Application Server')"
+				v-if="isServerType('Database Server')"
 			>
 				<LineChart
 					type="time"
@@ -312,7 +338,7 @@
 
 			<AnalyticsCard
 				title="Buffer Pool Miss Percent"
-				v-if="!isServerType('Application Server')"
+				v-if="isServerType('Database Server')"
 			>
 				<LineChart
 					type="time"
@@ -340,7 +366,7 @@
 			</AnalyticsCard>
 
 			<AnalyticsCard
-				v-if="!isServerType('Application Server')"
+				v-if="isServerType('Database Server')"
 				class="sm:col-span-2"
 				title="Frequent Slow queries"
 			>
@@ -364,7 +390,7 @@
 			</AnalyticsCard>
 
 			<AnalyticsCard
-				v-if="!isServerType('Application Server')"
+				v-if="isServerType('Database Server')"
 				class="sm:col-span-2"
 				title="Slowest queries"
 			>
@@ -553,6 +579,32 @@ export default {
 					this.showAdvancedAnalytics && this.isServerType('Application Server'),
 			};
 		},
+		backgroundJobCountBySite() {
+			return {
+				url: 'press.api.server.get_background_job_by_site',
+				params: {
+					name: this.chosenServer,
+					query: 'count',
+					timezone: this.localTimezone,
+					duration: this.duration,
+				},
+				auto:
+					this.showAdvancedAnalytics && this.isServerType('Application Server'),
+			};
+		},
+		backgroundJobDurationBySite() {
+			return {
+				url: 'press.api.server.get_background_job_by_site',
+				params: {
+					name: this.chosenServer,
+					query: 'duration',
+					timezone: this.localTimezone,
+					duration: this.duration,
+				},
+				auto:
+					this.showAdvancedAnalytics && this.isServerType('Application Server'),
+			};
+		},
 		slowLogsCount() {
 			return {
 				url: 'press.api.server.get_slow_logs_by_site',
@@ -693,20 +745,28 @@ export default {
 			return getCachedDocumentResource('Server', this.serverName);
 		},
 		serverOptions() {
-			return [
+			const options = [
 				{
-					label: 'Application Server',
+					label: this.$server.doc.is_unified_server
+						? 'Unified Server'
+						: 'Application Server',
 					value: this.$server.doc.name,
 				},
 				{
 					label: 'Database Server',
-					value: this.$server.doc.database_server,
+					value: !this.$server.doc.is_unified_server
+						? this.$server.doc.database_server
+						: false,
 				},
 				{
 					label: 'Replication Server',
 					value: this.$server.doc.replication_server,
 				},
 			].filter((v) => v.value);
+			if (options.length === 1 && !this.chosenServer) {
+				this.chosenServer = options[0].value;
+			}
+			return options;
 		},
 		loadAverageData() {
 			let loadavg = this.$resources.loadavg.data;
@@ -774,6 +834,18 @@ export default {
 
 			return requests;
 		},
+		backgroundJobCountBySiteData() {
+			const jobs = this.$resources.backgroundJobCountBySite.data;
+			if (!jobs) return;
+
+			return jobs;
+		},
+		backgroundJobDurationBySiteData() {
+			const jobs = this.$resources.backgroundJobDurationBySite.data;
+			if (!jobs) return;
+
+			return jobs;
+		},
 		slowLogsDurationData() {
 			const slowLogs = this.$resources.slowLogsDuration.data;
 			if (!slowLogs) return;
@@ -812,7 +884,7 @@ export default {
 		},
 		innodbBufferPoolSizeOfTotalRamData() {
 			let data = this.$resources.innodbBufferPoolSizeOfTotalRam.data;
-			if (!data) return;
+			if (!data || (data.datasets && data.datasets.length === 0)) return;
 			let payload = this.transformSingleLineChartData(data, true);
 			payload['markLine'] = {
 				data: [
@@ -845,7 +917,8 @@ export default {
 		},
 		innodbBufferPoolMissPercentageData() {
 			let data = this.$resources.innodbBufferPoolMissPercentage.data;
-			if (!data) return;
+			if (!data || (data.datasets && data.datasets.length === 0)) return;
+
 			let payload = this.transformSingleLineChartData(data, false);
 			payload['markLine'] = {
 				data: [
@@ -917,6 +990,10 @@ export default {
 			return { datasets, yMax: percentage ? 100 : null };
 		},
 		isServerType(type) {
+			// Show all analytics for Unified Server
+			if (this.$server.doc.is_unified_server) {
+				type = 'Unified Server';
+			}
 			return (
 				this.chosenServer ===
 				this.serverOptions.find((s) => s.label === type)?.value

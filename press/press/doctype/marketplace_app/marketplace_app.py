@@ -15,11 +15,12 @@ from frappe.website.utils import cleanup_page_name
 from frappe.website.website_generator import WebsiteGenerator
 
 from press.api.client import dashboard_whitelist
-from press.api.github import get_access_token
+from press.api.github import app, get_access_token
 from press.marketplace.doctype.marketplace_app_plan.marketplace_app_plan import (
 	get_app_plan_features,
 )
 from press.press.doctype.app.app import new_app as new_app_doc
+from press.press.doctype.app.app import parse_frappe_version
 from press.press.doctype.app_release_approval_request.app_release_approval_request import (
 	AppReleaseApprovalRequest,
 )
@@ -27,6 +28,7 @@ from press.press.doctype.marketplace_app.utils import get_rating_percentage_dist
 from press.utils import get_current_team, get_last_doc
 
 if TYPE_CHECKING:
+	from press.press.doctype.app_source.app_source import AppSource
 	from press.press.doctype.site.site import Site
 
 
@@ -69,6 +71,7 @@ class MarketplaceApp(WebsiteGenerator):
 		poll_method: DF.Data | None
 		privacy_policy: DF.Data | None
 		published: DF.Check
+		published_on: DF.Date | None
 		review_stage: DF.Literal[
 			"Not Started",
 			"Description Missing",
@@ -165,20 +168,26 @@ class MarketplaceApp(WebsiteGenerator):
 
 		if not self.sources:
 			source = app_doc.add_source(
-				self.version,
-				self.repository_url,
-				self.branch,
-				self.team,
-				self.github_installation_id,
+				repository_url=self.repository_url,
+				branch=self.branch,
+				team=self.team,
+				github_installation_id=self.github_installation_id,
+				frappe_version=self.frappe_version,
 				public=True,
 			)
 			self.app = source.app
-			self.append("sources", {"version": self.version, "source": source.name})
+			for version in source.versions:
+				self.append("sources", {"version": version.version, "source": source.name})
 
 	def validate(self):
 		self.published = self.status == "Published"
 		self.validate_sources()
 		self.validate_number_of_screenshots()
+		self.validate_summary()
+
+	def validate_summary(self):
+		if len(self.description) > 140:
+			frappe.throw("Marketplace App summary cannot be more than 140 characters.")
 
 	def validate_sources(self):
 		for source in self.sources:
@@ -199,7 +208,19 @@ class MarketplaceApp(WebsiteGenerator):
 		if len(self.screenshots) > max_allowed_screenshots:
 			frappe.throw(f"You cannot add more than {max_allowed_screenshots} screenshots for an app.")
 
+	def on_update(self):
+		self.set_published_on_date()
+
+	def set_published_on_date(self):
+		if self.published_on:
+			return
+
+		doc_before_save = self.get_doc_before_save()
+		if self.status == "Published" and doc_before_save.status != "Published":
+			self.published_on = frappe.utils.nowdate()
+
 	def change_branch(self, source, version, to_branch):
+		# This is basically upsert
 		existing_source = frappe.db.exists(
 			"App Source",
 			{
@@ -213,21 +234,55 @@ class MarketplaceApp(WebsiteGenerator):
 		if existing_source:
 			# If source with branch to switch already exists, just add version to child table of source and use the same
 			try:
-				source_doc = frappe.get_doc("App Source", existing_source)
+				source_doc: "AppSource" = frappe.get_doc("App Source", existing_source)
+				self.validate_frappe_version_for_branch(
+					owner=source_doc.repository_owner,
+					repository=source_doc.repository,
+					branch=to_branch,
+					version=version,
+					github_installation_id=source_doc.github_installation_id,
+				)
 				source_doc.append("versions", {"version": version})
 				source_doc.save()
-			except Exception:
-				pass
-
-			for source in self.sources:
-				if source.source == source:
-					source.source = existing_source
-					self.save()
+			except frappe.DoesNotExistError:
+				for source in self.sources:
+					if source.source == source:
+						source.source = existing_source
+						self.save()
 		else:
 			# if a different source with the branch to switch doesn't exists update the existing source
 			source_doc = frappe.get_doc("App Source", source)
+			self.validate_frappe_version_for_branch(
+				owner=source_doc.repository_owner,
+				repository=source_doc.repository,
+				branch=to_branch,
+				version=version,
+				github_installation_id=source_doc.github_installation_id,
+			)
 			source_doc.branch = to_branch
 			source_doc.save()
+
+	def validate_frappe_version_for_branch(
+		self,
+		owner: str,
+		repository: str,
+		branch: str,
+		version: str,
+		github_installation_id: str | None = None,
+	):
+		"""Check if the version being added is supported by the branch comparing the frappe versions in pyproject.toml"""
+		app_info = app(
+			owner=owner,
+			repository=repository,
+			branch=branch,
+			installation=github_installation_id
+			if github_installation_id
+			else frappe.get_value("Press Settings", None, "github_access_token"),
+		)
+		frappe_version = app_info.get("frappe_version")
+		frappe_version = parse_frappe_version(frappe_version)
+		if version not in frappe_version:
+			frappe.throw(f"{version} is not supported by branch {branch}")
 
 	@dashboard_whitelist()
 	def add_version(self, version, branch):
@@ -239,9 +294,20 @@ class MarketplaceApp(WebsiteGenerator):
 				["App Source", "branch", "=", branch],
 			],
 		)
+		source_doc: "AppSource" = (
+			frappe.get_doc("App Source", existing_source)
+			if existing_source
+			else frappe.get_doc("App Source", self.sources[0].source)
+		)
+		self.validate_frappe_version_for_branch(
+			owner=source_doc.repository_owner,
+			repository=source_doc.repository,
+			branch=branch,
+			version=version,
+			github_installation_id=source_doc.github_installation_id,
+		)
 		if existing_source:
 			# If source with branch to switch already exists, just add version to child table of source and use the same
-			source_doc = frappe.get_doc("App Source", existing_source)
 			try:
 				source_doc.append("versions", {"version": version})
 				source_doc.public = 1
@@ -601,6 +667,8 @@ class MarketplaceApp(WebsiteGenerator):
 		return get_plans_for_app(self.name, frappe_version)
 
 	def can_charge_for_subscription(self, subscription):
+		if subscription.team == self.team:
+			return False
 		return subscription.enabled == 1 and subscription.team and subscription.team != "Administrator"
 
 
@@ -642,9 +710,11 @@ def get_plans_for_app(
 
 def marketplace_app_hook(app=None, site: Site | None = None, op="install"):
 	if app is None:
+		if site is None:
+			return
 		site_apps = frappe.get_all("Site App", filters={"parent": site.name}, pluck="app")
-		for app in site_apps:
-			run_script(app, site, op)
+		for app_name in site_apps:
+			run_script(app_name, site, op)
 	else:
 		run_script(app, site, op)
 
@@ -668,10 +738,18 @@ def run_script(app, site: Site, op):
 
 @redis_cache(ttl=60 * 60 * 24)
 def get_total_installs_by_app():
-	total_installs = frappe.db.get_all(
-		"Site App",
-		fields=["app", "count(*) as count"],
-		group_by="app",
-		order_by=None,
-	)
+	try:
+		total_installs = frappe.db.get_all(
+			"Site App",
+			fields=["app", "count(*) as count"],
+			group_by="app",
+			order_by=None,
+		)
+	except:  # noqa E722
+		total_installs = frappe.db.get_all(
+			"Site App",
+			fields=["app", {"COUNT": "*", "as": "count"}],
+			group_by="app",
+			order_by=None,
+		)
 	return {installs["app"]: installs["count"] for installs in total_installs}

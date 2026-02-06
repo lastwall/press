@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from typing import TYPE_CHECKING
 
 import frappe
 import frappe.utils
@@ -15,6 +16,9 @@ from press.agent import Agent
 from press.api.client import dashboard_whitelist
 from press.overrides import get_permission_query_conditions_for_doctype
 from press.press.doctype.site_activity.site_activity import log_site_activity
+
+if TYPE_CHECKING:
+	from press.press.doctype.site.site import Site
 
 
 class SiteDatabaseUser(Document):
@@ -58,11 +62,6 @@ class SiteDatabaseUser(Document):
 		"max_connections",
 	)
 
-	def has_permission(self, perm_type):
-		team = frappe.get_value("Site", self.site, "team")
-		owner = frappe.get_value("Team", team, "user")
-		return frappe.session.user == owner or frappe.local.system_user()
-
 	def validate(self):
 		if not self.has_value_changed("status"):
 			self._raise_error_if_archived()
@@ -79,7 +78,7 @@ class SiteDatabaseUser(Document):
 			)
 
 	def before_insert(self):
-		site = frappe.get_doc("Site", self.site)
+		site: Site = frappe.get_doc("Site", self.site)
 		if not site.has_permission():
 			frappe.throw("You don't have permission to create database user")
 		if not frappe.db.get_value("Site Plan", site.plan, "database_access"):

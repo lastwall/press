@@ -142,6 +142,11 @@ let router = createRouter({
 					path: 'follow-up',
 					component: () => import('./components/partners/LeadFollowup.vue'),
 				},
+				{
+					name: 'LeadActivities',
+					path: 'activities',
+					component: () => import('./components/partners/LeadActivities.vue'),
+				},
 			],
 		},
 		{
@@ -153,6 +158,11 @@ let router = createRouter({
 					name: 'BillingOverview',
 					path: '',
 					component: () => import('./pages/BillingOverview.vue'),
+				},
+				{
+					name: 'BillingForecast',
+					path: 'forecast',
+					component: () => import('./pages/BillingForecast.vue'),
 				},
 				{
 					name: 'BillingInvoices',
@@ -218,9 +228,8 @@ let router = createRouter({
 						},
 						{
 							name: 'SettingsPermissionRolePermissions',
-							path: 'roles/:roleId',
-							component: () =>
-								import('./components/settings/RolePermissions.vue'),
+							path: 'roles/:id',
+							component: () => import('./components/settings/Role.vue'),
 							props: true,
 						},
 					],
@@ -239,6 +248,12 @@ let router = createRouter({
 					component: () => import('./components/partners/PartnerOverview.vue'),
 				},
 				{
+					name: 'PartnerWebsiteDetails',
+					path: 'website-details',
+					component: () =>
+						import('./components/partners/PartnerWebsiteDetails.vue'),
+				},
+				{
 					name: 'PartnerCustomers',
 					path: 'customers',
 					component: () => import('./components/partners/PartnerCustomers.vue'),
@@ -255,10 +270,9 @@ let router = createRouter({
 						import('./components/partners/PartnerCertificates.vue'),
 				},
 				{
-					name: 'PartnerApprovalRequests',
-					path: 'approval-requests',
-					component: () =>
-						import('./components/partners/PartnerApprovalRequests.vue'),
+					name: 'PartnerResources',
+					path: 'resources',
+					component: () => import('./components/partners/PartnerResources.vue'),
 				},
 				{
 					name: 'PartnerContributions',
@@ -301,9 +315,14 @@ let router = createRouter({
 					component: () => import('./pages/PartnerAdminCertificates.vue'),
 				},
 				{
-					name: 'PartnerLeadList',
-					path: 'partner-lead-list',
-					component: () => import('./components/partners/PartnerLeads.vue'),
+					name: 'PartnerAdminLeads',
+					path: 'partner-admin-lead-list',
+					component: () => import('./pages/PartnerAdminLeads.vue'),
+				},
+				{
+					name: 'PartnerAdminResources',
+					path: 'admin-resources',
+					component: () => import('./components/partners/PartnerResources.vue'),
 				},
 			],
 		},
@@ -350,6 +369,12 @@ let router = createRouter({
 			name: 'CreateSiteForMarketplaceApp',
 			path: '/create-site/:app',
 			component: () => import('./pages/CreateSiteForMarketplaceApp.vue'),
+			props: true,
+		},
+		{
+			name: 'NewSiteProgress',
+			path: '/sites/new/progress/:siteGroupDeployName',
+			component: () => import('./pages/NewSiteProgress.vue'),
 			props: true,
 		},
 		{
@@ -404,6 +429,55 @@ let router = createRouter({
 			props: true,
 		},
 		...generateRoutes(),
+		// TODO: makeshift redirect fixes for /insights paths
+		{
+			path: '/sites/:site/insights/overview',
+			redirect: (to) => ({
+				path: `/sites/${to.params.site}/overview`,
+			}),
+		},
+		{
+			path: '/sites/:site/insights/apps',
+			redirect: (to) => ({
+				path: `/sites/${to.params.site}/apps`,
+			}),
+		},
+		{
+			path: '/sites/:site/insights/domains',
+			redirect: (to) => ({
+				path: `/sites/${to.params.site}/domains`,
+			}),
+		},
+		{
+			path: '/sites/:site/insights/backups',
+			redirect: (to) => ({
+				path: `/sites/${to.params.site}/backups`,
+			}),
+		},
+		{
+			path: '/sites/:site/insights/site-config',
+			redirect: (to) => ({
+				path: `/sites/${to.params.site}/site-config`,
+			}),
+		},
+		{
+			path: '/sites/:site/insights/actions',
+			redirect: (to) => ({
+				path: `/sites/${to.params.site}/actions`,
+			}),
+		},
+		{
+			path: '/sites/:site/insights/updates',
+			redirect: (to) => ({
+				path: `/sites/${to.params.site}/updates`,
+			}),
+		},
+		{
+			path: '/sites/:site/insights/activity',
+			redirect: (to) => ({
+				path: `/sites/${to.params.site}/activity`,
+			}),
+		},
 		{
 			path: '/:pathMatch(.*)*',
 			name: '404',

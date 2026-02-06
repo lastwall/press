@@ -8,9 +8,11 @@ from typing import TYPE_CHECKING
 import frappe
 from frappe.model.document import Document
 
+from press.press.doctype.communication_info.communication_info import get_communication_info
 from press.press.doctype.press_notification.press_notification import (
 	create_new_notification,
 )
+from press.press.doctype.site.site import TRANSITORY_STATES
 from press.utils import log_error
 
 if TYPE_CHECKING:
@@ -26,6 +28,8 @@ class VersionUpgrade(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
+		bench_deploy_successful: DF.Check
+		deploy_private_bench: DF.Check
 		destination_group: DF.Link
 		last_output: DF.Code | None
 		last_traceback: DF.Code | None
@@ -44,8 +48,16 @@ class VersionUpgrade(Document):
 		if self.status == "Failure":
 			return
 		self.validate_versions()
-		self.validate_same_server()
+		# Skip server validation if waiting for bench deploy
+		if not self.deploy_private_bench or self.bench_deploy_successful:
+			self.validate_same_server()
 		self.validate_apps()
+
+	def after_insert(self):
+		if self.deploy_private_bench and self.destination_group:
+			self.status = "Pending"
+			self.save()
+			frappe.get_doc("Release Group", self.destination_group).initial_deploy()
 
 	def validate_same_server(self):
 		site_server = frappe.get_doc("Site", self.site).server
@@ -92,7 +104,7 @@ class VersionUpgrade(Document):
 	@frappe.whitelist()
 	def start(self):
 		site: "Site" = frappe.get_doc("Site", self.site)
-		if site.status.endswith("ing"):
+		if site.status in TRANSITORY_STATES:
 			frappe.throw("Site is under maintenance. Cannot Update")
 		try:
 			self.site_update = site.move_to_group(
@@ -134,6 +146,35 @@ class VersionUpgrade(Document):
 				)
 		self.save()
 
+	def update_version_upgrade_on_process_job(self, job):
+		if job.job_type != "New Bench":
+			return
+
+		if job.status == "Success":
+			self.bench_deploy_successful = 1
+			if self.scheduled_time:
+				self.status = "Scheduled"
+				self.save()
+			else:
+				self.start()
+		elif job.status in ["Failure", "Delivery Failure"]:
+			self.status = "Failure"
+			self.last_traceback = job.traceback
+			self.last_output = job.output
+			self.save()
+
+			site = frappe.get_doc("Site", self.site)
+			next_version = frappe.get_value("Release Group", self.destination_group, "version")
+			message = f"Bench deployment for site upgrade of <b>{site.host_name}</b> to <b>{next_version}</b> failed"
+
+			create_new_notification(
+				site.team,
+				"Version Upgrade",
+				"Agent Job",
+				job.name,
+				message,
+			)
+
 	@classmethod
 	def get_all_scheduled_before_now(cls) -> list["VersionUpgrade"]:
 		upgrades = frappe.get_all(
@@ -166,11 +207,9 @@ def update_from_site_update():
 				version_upgrade.last_traceback = last_traceback
 				version_upgrade.last_output = last_output
 				version_upgrade.status = "Failure"
-				site = frappe.get_doc("Site", version_upgrade.site)
-				recipient = site.notify_email or frappe.get_doc("Team", site.team).user
 
 				frappe.sendmail(
-					recipients=[recipient],
+					recipients=get_communication_info("Email", "Site Activity", "Site", version_upgrade.site),
 					subject=f"Automated Version Upgrade Failed for {version_upgrade.site}",
 					reference_doctype="Version Upgrade",
 					reference_name=version_upgrade.name,
@@ -192,9 +231,11 @@ def run_scheduled_upgrades():
 	for upgrade in VersionUpgrade.get_all_scheduled_before_now():
 		try:
 			site_status = frappe.db.get_value("Site", upgrade.site, "status")
-			if site_status.endswith("ing"):
+			if site_status in TRANSITORY_STATES:
 				# If we attempt to start the upgrade now, it will fail
 				# This will be picked up in the next iteration
+				continue
+			if upgrade.deploy_private_bench and not upgrade.bench_deploy_successful:
 				continue
 			upgrade.start()
 			frappe.db.commit()

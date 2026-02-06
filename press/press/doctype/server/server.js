@@ -70,6 +70,7 @@ frappe.ui.form.on('Server', {
 				false,
 				frm.doc.provider === 'AWS EC2',
 			],
+			[__('Setup Logrotate'), 'setup_logrotate', true, frm.doc.is_server_setup],
 			[
 				__('Setup PySpy'),
 				'setup_pyspy',
@@ -83,6 +84,12 @@ frappe.ui.form.on('Server', {
 				!frm.doc.is_server_prepared,
 			],
 			[__('Setup Server'), 'setup_server', true, !frm.doc.is_server_setup],
+			[
+				__('Setup Unified Server'),
+				'setup_unified_server',
+				true,
+				frm.doc.is_unified_server,
+			],
 			[
 				__('Add to Proxy'),
 				'add_upstream_to_proxy',
@@ -129,7 +136,6 @@ frappe.ui.form.on('Server', {
 			],
 			[__('Create Image'), 'create_image', true, frm.doc.status == 'Active'],
 			[__('Archive'), 'archive', true, frm.doc.status !== 'Archived'],
-			[__('Setup Fail2ban'), 'setup_fail2ban', true, frm.doc.is_server_setup],
 			[
 				__('Setup MySQLdump'),
 				'setup_mysqldump',
@@ -206,13 +212,13 @@ frappe.ui.form.on('Server', {
 			],
 			[
 				__('Enable Public Bench and Site Creation'),
-				'enable_server_for_new_benches_and_site',
+				'enable_for_new_benches_and_sites',
 				true,
 				frm.doc.virtual_machine,
 			],
 			[
 				__('Disable Public Bench and Site Creation'),
-				'disable_server_for_new_benches_and_site',
+				'disable_for_new_benches_and_sites',
 				true,
 				frm.doc.virtual_machine,
 			],
@@ -235,6 +241,27 @@ frappe.ui.form.on('Server', {
 				frm.doc.virtual_machine &&
 					frm.doc.status === 'Active' &&
 					frm.doc.platform === 'x86_64',
+			],
+			[__('Scale Up'), 'scale_up', true, !frm.doc.scaled_up],
+			[__('Scale Down'), 'scale_down', true, frm.doc.scaled_up],
+			[__('Setup Firewall'), 'setup_firewall', true, frm.doc.is_server_setup],
+			[
+				__('Teardown Firewall'),
+				'teardown_firewall',
+				true,
+				frm.doc.is_server_setup,
+			],
+			[
+				__('Install Wazuh Agent'),
+				'install_wazuh_agent',
+				true,
+				frm.doc.is_server_setup,
+			],
+			[
+				__('Uninstall Wazuh Agent'),
+				'uninstall_wazuh_agent',
+				true,
+				frm.doc.is_server_setup,
 			],
 		].forEach(([label, method, confirm, condition]) => {
 			if (typeof condition === 'undefined' || condition) {
@@ -267,6 +294,35 @@ frappe.ui.form.on('Server', {
 				);
 			}
 		});
+
+		if ((frm.doc.is_server_setup, frm.doc.is_primary)) {
+			frm.add_custom_button(
+				'Setup Secondary Server',
+				() => {
+					frappe.prompt(
+						[
+							{
+								fieldtype: 'Link',
+								fieldname: 'server_plan',
+								label: __('Server Plan'),
+								options: 'Server Plan',
+								reqd: 1,
+							},
+						],
+						({ server_plan }) => {
+							frm
+								.call('setup_secondary_server', {
+									server_plan: server_plan,
+								})
+								.then((r) => {
+									frm.refresh();
+								});
+						},
+					);
+				},
+				__('Actions'),
+			);
+		}
 
 		if (frm.doc.is_server_setup) {
 			frm.add_custom_button(

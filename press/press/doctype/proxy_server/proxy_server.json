@@ -11,6 +11,7 @@
   "domain",
   "self_hosted_server_domain",
   "tls_certificate_renewal_failed",
+  "plan",
   "column_break_3",
   "cluster",
   "provider",
@@ -23,9 +24,11 @@
   "storage_section",
   "auto_add_storage_min",
   "auto_add_storage_max",
+  "auto_increase_storage",
   "section_break_8",
   "ip",
   "enabled_default_routing",
+  "is_static_ip",
   "column_break_10",
   "private_ip",
   "private_mac_address",
@@ -44,6 +47,7 @@
   "frappe_user_password",
   "frappe_public_key",
   "column_break_18",
+  "bastion_server",
   "root_public_key",
   "section_break_21",
   "domains",
@@ -68,7 +72,6 @@
  ],
  "fields": [
   {
-   "fetch_from": "virtual_machine.public_ip_address",
    "fieldname": "ip",
    "fieldtype": "Data",
    "in_list_view": 1,
@@ -155,7 +158,6 @@
    "fieldtype": "Link",
    "label": "Domain",
    "options": "Root Domain",
-   "read_only": 1,
    "set_only_once": 1
   },
   {
@@ -163,7 +165,7 @@
    "fieldname": "provider",
    "fieldtype": "Select",
    "label": "Provider",
-   "options": "Generic\nScaleway\nAWS EC2\nOCI\nHetzner",
+   "options": "Generic\nScaleway\nAWS EC2\nOCI\nHetzner\nVodacom\nDigitalOcean",
    "set_only_once": 1
   },
   {
@@ -209,7 +211,7 @@
    "options": "Proxy Server Domain"
   },
   {
-   "depends_on": "eval:[\"AWS EC2\", \"OCI\", \"Hetzner\"].includes(doc.provider)",
+   "depends_on": "eval:[\"AWS EC2\", \"OCI\", \"Hetzner\", \"DigitalOcean\"].includes(doc.provider)",
    "fieldname": "virtual_machine",
    "fieldtype": "Link",
    "label": "Virtual Machine",
@@ -292,7 +294,8 @@
    "depends_on": "eval: doc.is_primary != 1",
    "fieldname": "is_replication_setup",
    "fieldtype": "Check",
-   "label": "Is Replication Setup"
+   "label": "Is Replication Setup",
+   "read_only": 1
   },
   {
    "default": "0",
@@ -436,10 +439,35 @@
    "fieldtype": "Check",
    "label": "TLS Certificate Renewal Failed",
    "read_only": 1
+  },
+  {
+   "fieldname": "bastion_server",
+   "fieldtype": "Link",
+   "label": "Bastion Server",
+   "options": "Bastion Server"
+  },
+  {
+   "default": "1",
+   "fieldname": "auto_increase_storage",
+   "fieldtype": "Check",
+   "label": "Auto Increase Storage"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_static_ip",
+   "fieldtype": "Check",
+   "label": "Is Static IP",
+   "read_only": 1
+  },
+  {
+   "fieldname": "plan",
+   "fieldtype": "Link",
+   "label": "Plan",
+   "options": "Server Plan"
   }
  ],
  "links": [],
- "modified": "2025-09-23 18:36:53.814704",
+ "modified": "2026-01-18 16:20:49.521726",
  "modified_by": "Administrator",
  "module": "Press",
  "name": "Proxy Server",

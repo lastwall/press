@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import typing
+
 import frappe
 from frappe import _
 from frappe.model.document import Document
@@ -11,6 +13,8 @@ from frappe.utils.data import fmt_money
 
 from press.api.billing import get_stripe
 from press.api.client import dashboard_whitelist
+from press.press.doctype.auto_scale_record.auto_scale_record import calculate_secondary_server_price
+from press.press.doctype.communication_info.communication_info import get_communication_info
 from press.utils import log_error
 from press.utils.billing import (
 	convert_stripe_money,
@@ -19,6 +23,9 @@ from press.utils.billing import (
 	get_partner_external_connection,
 	is_frappe_auth_disabled,
 )
+
+if typing.TYPE_CHECKING:
+	from press.press.doctype.usage_record.usage_record import UsageRecord
 
 
 class Invoice(Document):
@@ -43,6 +50,7 @@ class Invoice(Document):
 		amount_paid: DF.Currency
 		applied_credits: DF.Currency
 		billing_email: DF.Data | None
+		budget_alert_sent: DF.Check
 		credit_allocations: DF.Table[InvoiceCreditAllocation]
 		currency: DF.Link | None
 		customer_email: DF.Data | None
@@ -179,16 +187,27 @@ class Invoice(Document):
 
 		for item in doc["items"]:
 			if item.document_type in ("Server", "Database Server"):
+				is_primary = frappe.get_value(item.document_type, item.document_name, "is_primary")
 				item.document_name = frappe.get_value(item.document_type, item.document_name, "title")
 				if server_plan := frappe.get_value("Server Plan", item.plan, price_field):
-					item.plan = f"{currency_symbol}{server_plan}"
+					if not is_primary and item.document_type == "Server":
+						item.plan = (
+							f"{currency_symbol}{calculate_secondary_server_price(self.team, item.plan)}/hour"
+						)
+					else:
+						item.plan = f"{currency_symbol}{server_plan}/mo"
 				elif server_plan := frappe.get_value("Server Storage Plan", item.plan, price_field):
 					item.plan = f"Storage Add-on {currency_symbol}{server_plan}/GB"
+
 			elif item.document_type == "Marketplace App":
 				item.document_name = frappe.get_value(item.document_type, item.document_name, "title")
 				item.plan = (
 					f"{currency_symbol}{frappe.get_value('Marketplace App Plan', item.plan, price_field)}"
 				)
+			elif item.document_type == "Site":
+				hostname = frappe.get_value(item.document_type, item.document_name, "host_name")
+				if hostname:
+					item.document_name = hostname
 
 	@dashboard_whitelist()
 	def stripe_payment_url(self):
@@ -519,11 +538,12 @@ class Invoice(Document):
 		team = frappe.get_doc("Team", self.team)
 
 		self.customer_name = team.billing_name or frappe.utils.get_fullname(self.team)
-		self.customer_email = (
-			frappe.db.get_value("Communication Email", {"parent": team.user, "type": "invoices"}, ["value"])
-			or team.user
-		)
-		self.billing_email = team.billing_email or self.customer_email
+		self.customer_email = team.user
+		billing_emails = get_communication_info("Email", "Billing", "Team", self.team)
+		if billing_emails:
+			self.billing_email = billing_emails[0]
+		else:
+			self.billing_email = self.customer_email
 		self.currency = team.currency
 		if not self.payment_mode:
 			self.payment_mode = team.payment_mode
@@ -563,6 +583,43 @@ class Invoice(Document):
 				else:
 					item.description = "Prepaid Credits"
 
+	def is_auto_scale_invoice_item(self, usage_record: UsageRecord) -> bool:
+		"""Check if this a secondary server usage record"""
+		if usage_record.document_type != "Server":
+			return False
+
+		is_primary = frappe.db.get_value("Server", usage_record.document_name, "is_primary")
+		if is_primary:
+			return False
+
+		return True
+
+	def get_auto_scale_quantity(self, usage_record: UsageRecord) -> float:
+		"""Get the duration the server was auto scaled for"""
+		last_up_scale_at = frappe.db.get_value(
+			"Auto Scale Record",
+			{
+				"secondary_server": usage_record.document_name,
+				"status": "Success",
+				"action": "Scale Up",
+			},
+			"modified",
+		)
+
+		last_down_scale_at = frappe.db.get_value(
+			"Auto Scale Record",
+			{
+				"secondary_server": usage_record.document_name,
+				"status": "Success",
+				"action": "Scale Down",
+			},
+			"modified",
+		)
+
+		# Since down scale is always followed
+		scale_duration = last_down_scale_at - last_up_scale_at
+		return round(scale_duration.total_seconds() / 3600, 2)
+
 	def add_usage_record(self, usage_record):
 		if self.type != "Subscription":
 			return
@@ -592,7 +649,15 @@ class Invoice(Document):
 				},
 			)
 
-		invoice_item.quantity = (invoice_item.quantity or 0) + 1
+		if self.is_auto_scale_invoice_item(usage_record):
+			invoice_item.quantity = (
+				self.get_auto_scale_quantity(usage_record)
+				if not invoice_item.quantity
+				else invoice_item.quantity + self.get_auto_scale_quantity(usage_record)
+			)
+
+		else:
+			invoice_item.quantity = (invoice_item.quantity or 0) + 1
 
 		if usage_record.payout:
 			self.payout += usage_record.payout
@@ -785,6 +850,9 @@ class Invoice(Document):
 			address = frappe.get_doc("Address", team.billing_address) if team.billing_address else None
 			if not address:
 				# don't create invoice if address is not set
+				return None
+			if team.country != address.country:
+				# don't create invoice if team country and address country don't match
 				return None
 			client = self.get_frappeio_connection()
 			response = client.session.post(

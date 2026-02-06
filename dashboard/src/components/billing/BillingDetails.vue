@@ -14,9 +14,9 @@
 		/>
 		<ErrorMessage class="mt-2" :message="errorMessage" />
 	</div>
-	<div v-if="addressFormRef" class="mt-6">
+	<div v-if="addressFormRef" class="mt-6 flex justify-between gap-2">
+		<Button @click="$emit('back')">Back</Button>
 		<Button
-			class="w-full"
 			variant="solid"
 			label="Update billing details"
 			:loading="addressFormRef.updateBillingInformation.loading"
@@ -29,7 +29,7 @@ import NewAddressForm from './NewAddressForm.vue';
 import { FormControl, ErrorMessage, Button, createResource } from 'frappe-ui';
 import { reactive, ref, inject } from 'vue';
 
-const emit = defineEmits(['success']);
+const emit = defineEmits(['success', 'back']);
 
 const team = inject('team');
 
@@ -75,7 +75,7 @@ function updateBillingInformation() {
 		return;
 	}
 	const billing_name = billingInformation.billing_name.trim();
-	const billingNameRegex = /^[a-zA-Z0-9\-\'\,\.\s]+$/;
+	const billingNameRegex = /^[a-zA-Z0-9\-\'\,\.\(\)\s]+$/;
 	const billingNameValid = billingNameRegex.test(billing_name);
 	if (!billingNameValid) {
 		errorMessage.value = 'Billing Name contains invalid characters';

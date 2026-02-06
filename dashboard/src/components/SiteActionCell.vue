@@ -28,6 +28,7 @@ import { confirmDialog, renderDialog } from '../utils/components';
 import { getToastErrorMessage } from '../utils/toast';
 import router from '../router';
 import { isLastSite } from '../data/team';
+import CommunicationInfoDialog from './CommunicationInfoDialog.vue';
 
 const props = defineProps({
 	siteName: { type: String, required: true },
@@ -63,9 +64,6 @@ function getSiteActionHandler(action) {
 		'Change server': defineAsyncComponent(
 			() => import('./site/SiteChangeServerDialog.vue'),
 		),
-		'Schedule backup': defineAsyncComponent(
-			() => import('./site/SiteScheduleBackup.vue'),
-		),
 	};
 	if (actionDialogs[action]) {
 		const dialog = h(actionDialogs[action], { site: site.doc.name });
@@ -74,6 +72,7 @@ function getSiteActionHandler(action) {
 	}
 
 	const actionHandlers = {
+		'Notification Settings': onNotificationSettings,
 		'Activate site': onActivateSite,
 		'Deactivate site': onDeactivateSite,
 		'Drop site': onDropSite,
@@ -81,10 +80,20 @@ function getSiteActionHandler(action) {
 		'Transfer site': onTransferSite,
 		'Reset site': onSiteReset,
 		'Clear cache': onClearCache,
+		'Schedule backup': onScheduleBackup,
 	};
 	if (actionHandlers[action]) {
 		actionHandlers[action].call(this);
 	}
+}
+
+function onNotificationSettings() {
+	return renderDialog(
+		h(CommunicationInfoDialog, {
+			referenceDoctype: 'Site',
+			referenceName: site.doc.name,
+		}),
+	);
 }
 
 function onDeactivateSite() {
@@ -93,7 +102,7 @@ function onDeactivateSite() {
 		message: `
 			Are you sure you want to deactivate this site?<br><br>
 			<div class="text-bg-base bg-gray-100 p-2 rounded-md">
-			The site will go in an <strong>inactive</strong> state.It won't be accessible and background jobs won't run. 
+			The site will go in an <strong>inactive</strong> state. It won't be accessible and background jobs won't run. 
 			<br><br>
 			<div class="text-red-600">You will still be charged for it.</div>
 			</div>
@@ -288,6 +297,13 @@ function onClearCache() {
 				return site.clearSiteCache.submit().then(hide);
 			},
 		},
+	});
+}
+
+function onScheduleBackup() {
+	router.push({
+		name: 'Site Detail Backups',
+		params: { name: site.doc.name },
 	});
 }
 </script>
